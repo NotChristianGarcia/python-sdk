@@ -1,3 +1,4 @@
+from os import path
 from base64 import b64encode
 from collections.abc import Sequence
 import datetime
@@ -52,7 +53,8 @@ def _getspec(resource_name, resource_url, download_spec=False):
     try:
         # for now, hardcode the paths; we could look these up based on a canonical URL once that is
         # established.
-        spec_path = f'/home/tapis/tapy/dyna/resources/openapi_v3-{resource_name}.yml'
+        resources_dir = path.join(path.dirname(__file__), 'resources')
+        spec_path = f'{resources_dir}/openapi_v3-{resource_name}.yml'
         spec_dict = yaml.load(open(spec_path, 'r'))
         return create_spec(spec_dict)
     except Exception as e:
