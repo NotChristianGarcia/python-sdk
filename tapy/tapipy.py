@@ -8,7 +8,7 @@ from openapi_core import create_spec
 from openapi_core.schema.parameters.enums import ParameterLocation
 import yaml
 
-import tapy.errors
+import errors
 
 def _seq_but_not_str(obj):
     """
@@ -72,7 +72,7 @@ def get_basic_auth_header(username, password):
     return 'Basic {}'.format(b64encode(user_pass).decode())
 
 
-class DynaTapy(object):
+class Tapipy(object):
     """
     A dynamic client for the Tapis API.
     """
@@ -405,7 +405,7 @@ class DynaTapy(object):
         try:
             headers.update(kwargs.pop('headers', {}))
         except ValueError:
-            raise tapy.errors.InvalidInputError(msg="The headers argument, if passed, must be a dictionary-like object.")
+            raise errors.InvalidInputError(msg="The headers argument, if passed, must be a dictionary-like object.")
 
         r = requests.Request('POST',
                              url,
@@ -417,7 +417,7 @@ class DynaTapy(object):
         except Exception as e:
             # todo - handle different types of requests exceptions
             msg = f"Unable to make request to Tapis server. Exception: {e}"
-            raise tapy.errors.BaseTapyException(msg=msg, request=r)
+            raise errors.BaseTapyException(msg=msg, request=r)
         # try to get the error message and version from the Tapis request:
         try:
             error_msg = resp.json().get('message')
@@ -429,14 +429,14 @@ class DynaTapy(object):
             version = None
         # for any kind of non-20x response, we need to raise an error.
         if resp.status_code in (400, 404):
-            raise tapy.errors.InvalidInputError(msg=error_msg, version=version, request=r, response=resp)
+            raise errors.InvalidInputError(msg=error_msg, version=version, request=r, response=resp)
         if resp.status_code in (401, 403):
-            raise tapy.errors.NotAuthorizedError(msg=error_msg, version=version, request=r, response=resp)
+            raise errors.NotAuthorizedError(msg=error_msg, version=version, request=r, response=resp)
         if resp.status_code in (500, ):
-            raise tapy.errors.ServerDownError(msg=error_msg, version=version, request=r, response=resp)
+            raise errors.ServerDownError(msg=error_msg, version=version, request=r, response=resp)
         # catch-all for any other non-20x response:
         if resp.status_code >= 300:
-            raise tapy.errors.BaseTapyException(msg=error_msg, version=version, request=r, response=resp)
+            raise errors.BaseTapyException(msg=error_msg, version=version, request=r, response=resp)
 
         # generate the debug_data object
         debug_data = Debug(request=r, response=resp)
@@ -485,7 +485,7 @@ class DynaTapy(object):
                         return result
                 except Exception as e:
                     msg = f'Failed to serialize the result object. Got exception: {e}'
-                    raise tapy.errors.InvalidServerResponseError(msg=msg, version=version, request=r, response=resp)
+                    raise errors.InvalidServerResponseError(msg=msg, version=version, request=r, response=resp)
             else:
                 # the response was JSON but not the standard Tapis 4 stanzas, so just return the JSON content:
                 if debug:
@@ -587,10 +587,10 @@ class Operation(object):
             # look for the name in the kwargs
             if param.required:
                 if param.name not in kwargs:
-                    raise tapy.errors.InvalidInputError(msg=f"{param.name} is a required argument.")
+                    raise errors.InvalidInputError(msg=f"{param.name} is a required argument.")
             p_val = kwargs.pop(param.name)
             if param.required and not p_val:
-                raise tapy.errors.InvalidInputError(msg=f"{param.name} is a required argument and cannot be None.")
+                raise errors.InvalidInputError(msg=f"{param.name} is a required argument and cannot be None.")
             # replace the parameter in the path template with the parameter value
             s = '{' + f'{param.name}' + '}'
             url = url.replace(s, p_val)
@@ -609,7 +609,7 @@ class Operation(object):
             # look for the name in the kwargs
             if param.required:
                 if param.name not in kwargs:
-                    raise tapy.errors.InvalidInputError(msg=f"{param.name} is a required argument.")
+                    raise errors.InvalidInputError(msg=f"{param.name} is a required argument.")
             # only set the parameter if it was actually sent in the function -
             if param.name in kwargs:
                 p_val = kwargs.pop(param.name, None)
@@ -654,7 +654,7 @@ class Operation(object):
         try:
             headers.update(kwargs.pop('headers', {}))
         except ValueError:
-            raise tapy.errors.InvalidInputError(msg="The headers argument, if passed, must be a dictionary-like object.")
+            raise errors.InvalidInputError(msg="The headers argument, if passed, must be a dictionary-like object.")
 
         # construct the data -
         data = None
@@ -675,7 +675,7 @@ class Operation(object):
                         if p_name in kwargs:
                             data[p_name] = kwargs[p_name]
                         elif p_name in required_fields:
-                            raise tapy.errors.InvalidInputError(msg=f'{p_name} is a required argument.')
+                            raise errors.InvalidInputError(msg=f'{p_name} is a required argument.')
                     # serialize data before passing it to the request
                 data = json.dumps(data)
             if 'multipart/form-data' in self.op_desc.request_body.content.keys():
@@ -710,7 +710,7 @@ class Operation(object):
         except Exception as e:
             # todo - handle different types of requests exceptions
             msg = f"Unable to make request to Tapis server. Exception: {e}"
-            raise tapy.errors.BaseTapyException(msg=msg, request=r)
+            raise errors.BaseTapyException(msg=msg, request=r)
         # try to get the error message and version from the Tapis request:
         try:
             error_msg = resp.json().get('message')
@@ -722,14 +722,14 @@ class Operation(object):
             version = None
         # for any kind of non-20x response, we need to raise an error.
         if resp.status_code in (400, 404):
-            raise tapy.errors.InvalidInputError(msg=error_msg, version=version, request=r, response=resp)
+            raise errors.InvalidInputError(msg=error_msg, version=version, request=r, response=resp)
         if resp.status_code in (401, 403):
-            raise tapy.errors.NotAuthorizedError(msg=error_msg, version=version, request=r, response=resp)
+            raise errors.NotAuthorizedError(msg=error_msg, version=version, request=r, response=resp)
         if resp.status_code in (500, ):
-            raise tapy.errors.ServerDownError(msg=error_msg, version=version, request=r, response=resp)
+            raise errors.ServerDownError(msg=error_msg, version=version, request=r, response=resp)
         # catch-all for any other non-20x response:
         if resp.status_code >= 300:
-            raise tapy.errors.BaseTapyException(msg=error_msg, version=version, request=r, response=resp)
+            raise errors.BaseTapyException(msg=error_msg, version=version, request=r, response=resp)
 
         # generate the debug_data object
         debug_data = Debug(request=r, response=resp)
@@ -778,7 +778,7 @@ class Operation(object):
                         return result
                 except Exception as e:
                     msg = f'Failed to serialize the result object. Got exception: {e}'
-                    raise tapy.errors.InvalidServerResponseError(msg=msg, version=version, request=r, response=resp)
+                    raise errors.InvalidServerResponseError(msg=msg, version=version, request=r, response=resp)
             else:
                 # the response was JSON but not the standard Tapis 4 stanzas, so just return the JSON content:
                 if debug:
@@ -802,13 +802,13 @@ class TapisResult(object):
     def __init__(self, *args, **kwargs):
         if args and kwargs:
             msg = f"Could not instantiate result object; constructor got args and kwargs. args={args}; kwargs={kwargs}"
-            raise tapy.errors.BaseTapyException(msg=msg)
+            raise errors.BaseTapyException(msg=msg)
         # is passing non-key-value args, there should be only one arg;
         # it should be either a list or a primitive type:
         if args:
             if len(args) > 1:
                 msg = f"Could not instantiate result object; constructor got args of length > 1. args={args}."
-                raise tapy.errors.BaseTapyException(msg=msg)
+                raise errors.BaseTapyException(msg=msg)
             arg = args[0]
             # the arg is a list and not a string, there are two cases: 1) at least one object in the list is a
             # primitive type, in which case we just return a list of the objects

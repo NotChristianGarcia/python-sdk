@@ -5,8 +5,8 @@
 import pytest
 
 from common.config import conf
-from tapy.dyna import DynaTapy
-from tapy.dyna.dynatapy import TapisResult
+from tapy import Tapipy
+from tapy.Tapipy import TapisResult
 
 @pytest.fixture
 def client():
@@ -15,7 +15,7 @@ def client():
     account_type = getattr(conf, 'account_type', 'service')
     tenant_id = getattr(conf, 'tenant_id', 'master')
     service_password = getattr(conf, 'service_password', None)
-    t = DynaTapy(base_url=base_url,
+    t = Tapipy(base_url=base_url,
                  username=username,
                  account_type=account_type,
                  tenant_id=tenant_id,
