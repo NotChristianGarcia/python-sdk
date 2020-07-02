@@ -8,7 +8,8 @@
 from tapis/flaskbase
 
 USER root
-ADD tapy/dyna/requirements.txt /home/tapis/requirements.txt
+RUN pip uninstall tapylib
+ADD tapy/requirements.txt /home/tapis/requirements.txt
 RUN pip install -r /home/tapis/requirements.txt
 
 ADD test/configschema.json /home/tapis/configschema.json

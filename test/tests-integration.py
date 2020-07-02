@@ -5,8 +5,8 @@
 import pytest
 
 from common.config import conf
-from tapy import Tapipy
-from tapy.Tapipy import TapisResult
+from tapipy import Tapipy
+from tapipy.Tapipy import TapisResult
 
 @pytest.fixture
 def client():

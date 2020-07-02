@@ -4,10 +4,10 @@ FROM tapis/dynatapy
 ADD requirements.txt /home/tapis/tests/requirements.txt
 
 USER root
+RUN rm -rf tapy
 RUN pip install -r /home/tapis/tests/requirements.txt
 # RUN chmod -R tapis:tapis /home/tapis
 
-RUN rm -rf tapy
 User tapis
 ADD tests-integration.py /home/tapis/tests-integration.py
 ADD configschema.json /home/tapis/configschema.json
