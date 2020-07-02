@@ -1,14 +1,16 @@
-from os import path
 from base64 import b64encode
 from collections.abc import Sequence
 import datetime
 import json
+import jwt
+import os
 import requests
 from openapi_core import create_spec
 from openapi_core.schema.parameters.enums import ParameterLocation
 import yaml
 
-from tapipy import errors
+import tapy.errors
+
 
 def _seq_but_not_str(obj):
     """
@@ -20,14 +22,24 @@ def _seq_but_not_str(obj):
 
 
 RESOURCES = [('actors', 'https://raw.githubusercontent.com/TACC/abaco/master/docs/specs/openapi_v3.yml'),
-             ('authenticator', 'https://raw.githubusercontent.com/tapis-project/authenticator/dev/service/resources/openapi_v3.yml'),
-             ('meta','https://raw.githubusercontent.com/tapis-project/tapis-client-java/master/meta-client/src/main/resources/metav3-openapi.yaml'),
-             ('files', 'https://raw.githubusercontent.com/tapis-project/tapis-files/master/api/src/main/resources/openapi.yaml'),  ## currently the files spec is missing operationId's for some of its operations.
-             ('sk', 'https://raw.githubusercontent.com/tapis-project/tapis-client-java/master/security-client/src/main/resources/SKAuthorizationAPI.yaml'),
-             ('streams', 'https://raw.githubusercontent.com/tapis-project/streams-api/dev/service/resources/openapi_v3.yml'),
-             ('systems', 'https://raw.githubusercontent.com/tapis-project/tapis-client-java/master/systems-client/SystemsAPI.yaml'),
-             ('tenants', 'https://raw.githubusercontent.com/tapis-project/tenants-api/master/service/resources/openapi_v3.yml'),
-             ('tokens','https://raw.githubusercontent.com/tapis-project/tokens-api/master/service/resources/openapi_v3.yml'),]
+             ('authenticator',
+              'https://raw.githubusercontent.com/tapis-project/authenticator/dev/service/resources/openapi_v3.yml'),
+             ('meta',
+              'https://raw.githubusercontent.com/tapis-project/tapis-client-java/master/meta-client/src/main/resources/metav3-openapi.yaml'),
+             ('files',
+              'https://raw.githubusercontent.com/tapis-project/tapis-files/master/api/src/main/resources/openapi.yaml'),
+             ## currently the files spec is missing operationId's for some of its operations.
+             ('sk',
+              'https://raw.githubusercontent.com/tapis-project/tapis-client-java/master/security-client/src/main/resources/SKAuthorizationAPI.yaml'),
+             ('streams',
+              'https://raw.githubusercontent.com/tapis-project/streams-api/dev/service/resources/openapi_v3.yml'),
+             ('systems',
+              'https://raw.githubusercontent.com/tapis-project/tapis-client-java/master/systems-client/SystemsAPI.yaml'),
+             ('tenants',
+              'https://raw.githubusercontent.com/tapis-project/tenants-api/master/service/resources/openapi_v3.yml'),
+             ('tokens',
+              'https://raw.githubusercontent.com/tapis-project/tokens-api/master/service/resources/openapi_v3.yml'), ]
+
 
 def _getspec(resource_name, resource_url, download_spec=False):
     """
@@ -40,26 +52,27 @@ def _getspec(resource_name, resource_url, download_spec=False):
         try:
             response = requests.get(resource_url)
             if response.status_code == 200:
-               try:
-                   spec_dict = yaml.load(response.content)
-                   return create_spec(spec_dict)
-        # for now, if there are errors trying to fetch the latest spec, we fall back to the spec files defined in the
-        # the python-sdk package;
-               except:
-                   pass
+                try:
+                    spec_dict = yaml.load(response.content)
+                    return create_spec(spec_dict)
+                # for now, if there are errors trying to fetch the latest spec, we fall back to the spec files defined in the
+                # the python-sdk package;
+                except:
+                    pass
         except:
             pass
 
     try:
         # for now, hardcode the paths; we could look these up based on a canonical URL once that is
         # established.
-        resources_dir = path.join(path.dirname(__file__), 'resources')
+        resources_dir = os.path.join(os.path.dirname(__file__), 'resources')
         spec_path = f'{resources_dir}/openapi_v3-{resource_name}.yml'
         spec_dict = yaml.load(open(spec_path, 'r'))
         return create_spec(spec_dict)
     except Exception as e:
         print(f"Got exception trying to load spec_path: {spec_path}; exception: {e}")
         raise e
+
 
 RESOURCE_SPECS = {resource[0]: _getspec(resource[0], resource[1]) for resource in RESOURCES}
 
@@ -72,9 +85,9 @@ def get_basic_auth_header(username, password):
     return 'Basic {}'.format(b64encode(user_pass).decode())
 
 
-class Tapipy(object):
+class Tapis(object):
     """
-    A dynamic client for the Tapis API.
+    A client for the Tapis API.
     """
 
     def __init__(self,
@@ -149,19 +162,21 @@ class Tapipy(object):
             resource_specs = {resource[0]: _getspec(resource[0], resource[1], download_spec=True)
                               for resource in RESOURCES}
         else:
-            resource_specs= RESOURCE_SPECS
+            resource_specs = RESOURCE_SPECS
 
         # create resources for each API defined above. In the future we could make this more dynamic in multiple ways.
         for resource_name, spec in resource_specs.items():
             # each API is a top-level attribute on the DynaTapy object, a Resource object constructed as follows:
             setattr(self, resource_name, Resource(resource_name, spec.paths, self))
 
+        # we lazy-load the tenant_cache to prevent making a call to the Tenants API when not needed.
+        self.tenant_cache = None
         # if the user passed just base_url, try to get the list of tenants and derive the tenant_id from it.
         if base_url and not tenant_id:
-                tenants = self.tenants.list_tenants()
-                for t in tenants:
-                    if t.base_url == base_url:
-                        self.tenant_id = t.tenant_id
+            self.update_tenant_cache()
+            for t in self.tenant_cache:
+                if t.base_url == base_url:
+                    self.tenant_id = t.tenant_id
 
         # it the caller did not explicitly set the x_tenant_id and x_username headers, and this is a service token
         # set them for the caller.
@@ -169,6 +184,27 @@ class Tapipy(object):
             if self.account_type == 'service':
                 self.x_tenant_id = self.tenant_id
                 self.x_username = self.username
+
+    def update_tenant_cache(self):
+        """
+        Update the local cache of tenant objects.
+        :return:
+        """
+        self.tenant_cache = self.tenants.list_tenants()
+
+    def get_tenant_config(self, tenant_id):
+        """
+        Retrieve the configuration for a tenant. Uses the cache
+        :param tenant_id:
+        :return:
+        """
+        try:
+            return self.tenant_cache[tenant_id]
+        except KeyError:
+            # update the cache and try again, but let the KeyError bubble up this time:
+            self.update_tenant_cache()
+            return self.tenant_cache[tenant_id]
+
 
     def get_tokens(self, **kwargs):
         """
@@ -178,7 +214,6 @@ class Tapipy(object):
         if self.account_type == 'service':
             return self.get_service_tokens(**kwargs)
         return self.get_user_tokens(**kwargs)
-
 
     def get_user_tokens(self, **kwargs):
         """
@@ -216,11 +251,10 @@ class Tapipy(object):
         if hasattr(tokens, 'refresh_token'):
             self.set_refresh_token(tokens.refresh_token)
 
-
     def get_service_tokens(self, **kwargs):
         """
         Calls the Tapis Tokens API (tokengen) to get access and refresh tokens for a service and set them on the client.
-        :return: 
+        :return:
         """
         if not 'username' in kwargs:
             username = self.username
@@ -255,6 +289,39 @@ class Tapipy(object):
         self.set_access_token(tokens.access_token)
         self.set_refresh_token(tokens.refresh_token)
 
+    def validate_token(self, token):
+        """
+        Validate a Tapis token.
+        :param token: The token to validate
+        :return:
+        """
+        # first, decode the token data to determine the tenant associated with the token. We are not able to
+        # check the signature until we know which tenant, and thus, which public key, to use for validation.
+        if not token:
+            raise errors.NoTokenError("No Tapis access token found in the request.")
+        try:
+            data = jwt.decode(token, verify=False)
+        except Exception as e:
+            raise errors.AuthenticationError("Could not parse the Tapis access token.")
+        # get the tenant out of the jwt payload and get associated public key
+        try:
+            token_tenant_id = data['tapis/tenant_id']
+        except KeyError:
+            raise errors.AuthenticationError(
+                "Unable to process Tapis token; could not parse the tenant_id. It is possible "
+                "the token is in a format no longer supported by the platform.")
+        try:
+            public_key_str = self.get_tenant_config(tenant_id=token_tenant_id)['public_key']
+        except errors.BaseTapisError:
+            raise errors.AuthenticationError("Unable to process Tapis token; unexpected tenant_id.")
+        except KeyError:
+            raise errors.AuthenticationError("Unable to process Tapis token; no public key associated with the "
+                                             "tenant_id.")
+        try:
+            return jwt.decode(token, public_key_str, algorithm='RS256')
+        except Exception as e:
+            raise errors.AuthenticationError("Invalid Tapis token.")
+
     def set_access_token(self, token):
         """
         Set the access token to be used in this session.
@@ -266,14 +333,12 @@ class Tapipy(object):
             return self.access_token.expires_at - datetime.datetime.now(datetime.timezone.utc)
 
         self.access_token = token
-        # avoid circular imports by nesting this import here - the common.auth module has to import dynatapy at
-        # initialization to make create service clients.
         try:
-            from common.auth import validate_token
             self.access_token.claims = validate_token(self.access_token.access_token)
             self.access_token.original_ttl = self.access_token.expires_in
             self.access_token.expires_in = _expires_in
-            self.access_token.expires_at = datetime.datetime.fromtimestamp(self.access_token.claims['exp'], datetime.timezone.utc)
+            self.access_token.expires_at = datetime.datetime.fromtimestamp(self.access_token.claims['exp'],
+                                                                           datetime.timezone.utc)
         except:
             pass
 
@@ -282,7 +347,7 @@ class Tapipy(object):
         Use the refresh token on this client to get a new access and refresh token pair.
         """
         if not self.refresh_token:
-            raise errors.TapyClientConfigurationError(msg="No refresh token found.")
+            raise tapy.errors.TapyClientConfigurationError(msg="No refresh token found.")
         if self.account_type == 'service':
             return self.refresh_service_tokens()
         else:
@@ -293,9 +358,9 @@ class Tapipy(object):
         Use the refresh token operation for tokens of type "user".
         """
         if not self.client_id:
-            raise errors.TapyClientConfigurationError(msg="client_id not configure.")
+            raise tapy.errors.TapyClientConfigurationError(msg="client_id not configure.")
         if not self.client_key:
-            raise errors.TapyClientConfigurationError(msg="client_key not configure.")
+            raise tapy.errors.TapyClientConfigurationError(msg="client_key not configure.")
         auth_header = {'Authorization': get_basic_auth_header(self.client_id, self.client_key)}
         tokens = self.authenticator.create_token(grant_type='refresh_token',
                                                  refresh_token=self.refresh_token.refresh_token,
@@ -317,14 +382,12 @@ class Tapipy(object):
         :param token: (TapisResult) A TapisResult object returned using the t.tokens.create_token() method.
         :return:
         """
+
         def _expires_in():
             return self.refresh_token.expires_at - datetime.datetime.now(datetime.timezone.utc)
 
         self.refresh_token = token
-        # avoid circular imports by nesting this import here - the common.auth module has to import dynatapy at
-        # initialization to make create service clients.
         try:
-            from common.auth import validate_token
             self.refresh_token.claims = validate_token(self.refresh_token.refresh_token)
             self.refresh_token.original_ttl = self.refresh_token.expires_in
             self.refresh_token.expires_in = _expires_in
@@ -405,7 +468,8 @@ class Tapipy(object):
         try:
             headers.update(kwargs.pop('headers', {}))
         except ValueError:
-            raise errors.InvalidInputError(msg="The headers argument, if passed, must be a dictionary-like object.")
+            raise tapy.errors.InvalidInputError(
+                msg="The headers argument, if passed, must be a dictionary-like object.")
 
         r = requests.Request('POST',
                              url,
@@ -417,7 +481,7 @@ class Tapipy(object):
         except Exception as e:
             # todo - handle different types of requests exceptions
             msg = f"Unable to make request to Tapis server. Exception: {e}"
-            raise errors.BaseTapyException(msg=msg, request=r)
+            raise tapy.errors.BaseTapyException(msg=msg, request=r)
         # try to get the error message and version from the Tapis request:
         try:
             error_msg = resp.json().get('message')
@@ -429,14 +493,14 @@ class Tapipy(object):
             version = None
         # for any kind of non-20x response, we need to raise an error.
         if resp.status_code in (400, 404):
-            raise errors.InvalidInputError(msg=error_msg, version=version, request=r, response=resp)
+            raise tapy.errors.InvalidInputError(msg=error_msg, version=version, request=r, response=resp)
         if resp.status_code in (401, 403):
-            raise errors.NotAuthorizedError(msg=error_msg, version=version, request=r, response=resp)
-        if resp.status_code in (500, ):
-            raise errors.ServerDownError(msg=error_msg, version=version, request=r, response=resp)
+            raise tapy.errors.NotAuthorizedError(msg=error_msg, version=version, request=r, response=resp)
+        if resp.status_code in (500,):
+            raise tapy.errors.ServerDownError(msg=error_msg, version=version, request=r, response=resp)
         # catch-all for any other non-20x response:
         if resp.status_code >= 300:
-            raise errors.BaseTapyException(msg=error_msg, version=version, request=r, response=resp)
+            raise tapy.errors.BaseTapyException(msg=error_msg, version=version, request=r, response=resp)
 
         # generate the debug_data object
         debug_data = Debug(request=r, response=resp)
@@ -485,7 +549,7 @@ class Tapipy(object):
                         return result
                 except Exception as e:
                     msg = f'Failed to serialize the result object. Got exception: {e}'
-                    raise errors.InvalidServerResponseError(msg=msg, version=version, request=r, response=resp)
+                    raise tapy.errors.InvalidServerResponseError(msg=msg, version=version, request=r, response=resp)
             else:
                 # the response was JSON but not the standard Tapis 4 stanzas, so just return the JSON content:
                 if debug:
@@ -500,18 +564,17 @@ class Tapipy(object):
         return resp.content
 
 
-
 class Resource(object):
     """
-    Represents a top-level API "resource" defined by an OpenAPI spec file. 
+    Represents a top-level API "resource" defined by an OpenAPI spec file.
     """
 
     def __init__(self, resource_name, resource_spec, tapis_client):
         """
-        Instantiate a resource. 
-        :param resource_name: (str) The name of the resource, such as "files", "apps", etc. 
-        :param resource_spec: (openapi_core.schema.specs.models.Spec) The Spec object associated with this resource. 
-        :param tapis_client: (tapy.Tapis) Pointer to the Tapis object to which this resource will be attached. 
+        Instantiate a resource.
+        :param resource_name: (str) The name of the resource, such as "files", "apps", etc.
+        :param resource_spec: (openapi_core.schema.specs.models.Spec) The Spec object associated with this resource.
+        :param tapis_client: (tapy.Tapis) Pointer to the Tapis object to which this resource will be attached.
         """
         # resource_name is something like "files", "apps", etc.
         self.resource_name = resource_name
@@ -541,16 +604,16 @@ class Resource(object):
 class Operation(object):
     """
     Represents a single operation on an API resource defined by an OpenAPI spec file.
-    Operation objects are in one-to-one correspondence with operation_id's defined in the spec file.     
+    Operation objects are in one-to-one correspondence with operation_id's defined in the spec file.
     """
 
     def __init__(self, resource_name, op_desc, tapis_client):
         """
-        Instantiate an operation. The op_desc should an openapi_core Operation object associated with the operation. 
+        Instantiate an operation. The op_desc should an openapi_core Operation object associated with the operation.
         :param resource_name: (str) The resource associated with this operation.
-        :param op_desc: (openapi_core.schema.operations.models.Operation) OpenAPI description of the operation. 
+        :param op_desc: (openapi_core.schema.operations.models.Operation) OpenAPI description of the operation.
         :param tapis_client: Pointer to the Tapis object to which this resource will be attached.
-        :return: 
+        :return:
         """
         self.resource_name = resource_name
         self.op_desc = op_desc
@@ -565,13 +628,13 @@ class Operation(object):
 
     def __call__(self, **kwargs):
         """
-        Turns the operation object into a callable. Arguments must be passed as kwargs, where the name of each kwarg 
+        Turns the operation object into a callable. Arguments must be passed as kwargs, where the name of each kwarg
         corresponds to a "parameter" in the OpenApi definition. Here, parameter could be a path parameter, body
-        parameter, or query parameter. 
-         
+        parameter, or query parameter.
+
         :param kwargs: All allowable arguments to this operation.
-         
-        :return: 
+
+        :return:
         """
         # the http method is defined by the operation -
         http_method = self.http_method.upper()
@@ -579,7 +642,7 @@ class Operation(object):
         # construct the http path -
         # some API definitions, such as SK, chose to not include the "/v3/" at the beginning of their paths, so we add it in:
         if not self.op_desc.path_name.startswith('/v3/'):
-            self.url = f'{self.tapis_client.base_url}/v3{self.op_desc.path_name}' # base url
+            self.url = f'{self.tapis_client.base_url}/v3{self.op_desc.path_name}'  # base url
         else:
             self.url = f'{self.tapis_client.base_url}{self.op_desc.path_name}'  # base url
         url = self.url
@@ -587,10 +650,10 @@ class Operation(object):
             # look for the name in the kwargs
             if param.required:
                 if param.name not in kwargs:
-                    raise errors.InvalidInputError(msg=f"{param.name} is a required argument.")
+                    raise tapy.errors.InvalidInputError(msg=f"{param.name} is a required argument.")
             p_val = kwargs.pop(param.name)
             if param.required and not p_val:
-                raise errors.InvalidInputError(msg=f"{param.name} is a required argument and cannot be None.")
+                raise tapy.errors.InvalidInputError(msg=f"{param.name} is a required argument and cannot be None.")
             # replace the parameter in the path template with the parameter value
             s = '{' + f'{param.name}' + '}'
             url = url.replace(s, p_val)
@@ -609,7 +672,7 @@ class Operation(object):
             # look for the name in the kwargs
             if param.required:
                 if param.name not in kwargs:
-                    raise errors.InvalidInputError(msg=f"{param.name} is a required argument.")
+                    raise tapy.errors.InvalidInputError(msg=f"{param.name} is a required argument.")
             # only set the parameter if it was actually sent in the function -
             if param.name in kwargs:
                 p_val = kwargs.pop(param.name, None)
@@ -621,7 +684,7 @@ class Operation(object):
         # set the X-Tapis-Token header using the client
         if self.tapis_client.get_access_jwt():
             # check for a token about to expire in the next 5 seconds; assume by default we have a token with
-            # plenty of time remaining. 
+            # plenty of time remaining.
             time_remaining = datetime.timedelta(days=10)
             try:
                 time_remaining = self.tapis_client.access_token.expires_in()
@@ -654,7 +717,8 @@ class Operation(object):
         try:
             headers.update(kwargs.pop('headers', {}))
         except ValueError:
-            raise errors.InvalidInputError(msg="The headers argument, if passed, must be a dictionary-like object.")
+            raise tapy.errors.InvalidInputError(
+                msg="The headers argument, if passed, must be a dictionary-like object.")
 
         # construct the data -
         data = None
@@ -671,11 +735,12 @@ class Operation(object):
                     data = kwargs['request_body']
                 else:
                     # otherwise, the request body has defined properties, so look for each one in the function kwargs
-                    for p_name, p_desc in self.op_desc.request_body.content['application/json'].schema.properties.items():
+                    for p_name, p_desc in self.op_desc.request_body.content[
+                        'application/json'].schema.properties.items():
                         if p_name in kwargs:
                             data[p_name] = kwargs[p_name]
                         elif p_name in required_fields:
-                            raise errors.InvalidInputError(msg=f'{p_name} is a required argument.')
+                            raise tapy.errors.InvalidInputError(msg=f'{p_name} is a required argument.')
                     # serialize data before passing it to the request
                 data = json.dumps(data)
             if 'multipart/form-data' in self.op_desc.request_body.content.keys():
@@ -710,7 +775,7 @@ class Operation(object):
         except Exception as e:
             # todo - handle different types of requests exceptions
             msg = f"Unable to make request to Tapis server. Exception: {e}"
-            raise errors.BaseTapyException(msg=msg, request=r)
+            raise tapy.errors.BaseTapyException(msg=msg, request=r)
         # try to get the error message and version from the Tapis request:
         try:
             error_msg = resp.json().get('message')
@@ -722,14 +787,14 @@ class Operation(object):
             version = None
         # for any kind of non-20x response, we need to raise an error.
         if resp.status_code in (400, 404):
-            raise errors.InvalidInputError(msg=error_msg, version=version, request=r, response=resp)
+            raise tapy.errors.InvalidInputError(msg=error_msg, version=version, request=r, response=resp)
         if resp.status_code in (401, 403):
-            raise errors.NotAuthorizedError(msg=error_msg, version=version, request=r, response=resp)
-        if resp.status_code in (500, ):
-            raise errors.ServerDownError(msg=error_msg, version=version, request=r, response=resp)
+            raise tapy.errors.NotAuthorizedError(msg=error_msg, version=version, request=r, response=resp)
+        if resp.status_code in (500,):
+            raise tapy.errors.ServerDownError(msg=error_msg, version=version, request=r, response=resp)
         # catch-all for any other non-20x response:
         if resp.status_code >= 300:
-            raise errors.BaseTapyException(msg=error_msg, version=version, request=r, response=resp)
+            raise tapy.errors.BaseTapyException(msg=error_msg, version=version, request=r, response=resp)
 
         # generate the debug_data object
         debug_data = Debug(request=r, response=resp)
@@ -778,7 +843,7 @@ class Operation(object):
                         return result
                 except Exception as e:
                     msg = f'Failed to serialize the result object. Got exception: {e}'
-                    raise errors.InvalidServerResponseError(msg=msg, version=version, request=r, response=resp)
+                    raise tapy.errors.InvalidServerResponseError(msg=msg, version=version, request=r, response=resp)
             else:
                 # the response was JSON but not the standard Tapis 4 stanzas, so just return the JSON content:
                 if debug:
@@ -799,16 +864,17 @@ class TapisResult(object):
     """
 
     PRIMITIVE_TYPES = [int, str, bool, bytearray, bytes, float, type(None)]
+
     def __init__(self, *args, **kwargs):
         if args and kwargs:
             msg = f"Could not instantiate result object; constructor got args and kwargs. args={args}; kwargs={kwargs}"
-            raise errors.BaseTapyException(msg=msg)
+            raise tapy.errors.BaseTapyException(msg=msg)
         # is passing non-key-value args, there should be only one arg;
         # it should be either a list or a primitive type:
         if args:
             if len(args) > 1:
                 msg = f"Could not instantiate result object; constructor got args of length > 1. args={args}."
-                raise errors.BaseTapyException(msg=msg)
+                raise tapy.errors.BaseTapyException(msg=msg)
             arg = args[0]
             # the arg is a list and not a string, there are two cases: 1) at least one object in the list is a
             # primitive type, in which case we just return a list of the objects
@@ -834,7 +900,8 @@ class TapisResult(object):
                 setattr(self, k, TapisResult(**v))
 
     def __str__(self):
-        attrs = '\n'.join([f'{str(a)}: {getattr(self, a)}' for a in dir(self) if not a.startswith('__') and not a.startswith('PRIMITIVE_TYPES')])
+        attrs = '\n'.join([f'{str(a)}: {getattr(self, a)}' for a in dir(self) if
+                           not a.startswith('__') and not a.startswith('PRIMITIVE_TYPES')])
         return f'\n{attrs}'
 
     def __repr__(self):
@@ -845,6 +912,7 @@ class Debug(object):
     """
     Debug data for an API request.
     """
+
     def __init__(self, request, response):
         self.request = request
         self.response = response
